@@ -1,0 +1,146 @@
+name: Build Nokia XG-040G-MD with OpenClash
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Create a GitHub Release with the firmware image"
+        required: false
+        type: boolean
+        default: true
+  push:
+    paths:
+      - 'build-trigger/xg040g-md-openclash'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-xg040g-md-oc
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build nokia_xg-040g-md-ubi + OpenClash
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h /
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk \
+            gettext git g++-multilib gcc-multilib gperf help2man intltool \
+            libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
+            libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool libyaml-dev lld llvm ninja-build p7zip-full patch pkgconf \
+            python3 python3-docutils python3-pip python3-ply python3-pyelftools \
+            qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs unzip wget xmlto xxd zlib1g-dev zstd
+
+      - name: Cache downloads
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: ponwrt-dl-xg040gmd-oc-${{ hashFiles('feeds.conf.default') }}
+          restore-keys: |
+            ponwrt-dl-xg040gmd-oc-
+            ponwrt-dl-xg040gmd-
+
+      - name: Add OpenClash feed and install feeds
+        run: |
+          grep -q 'OpenClash' feeds.conf.default || \
+            echo 'src-git openclash https://github.com/vernesong/OpenClash.git' >> feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure for Nokia XG-040G-MD + OpenClash
+        run: |
+          cat > seed.config <<'SEED'
+          CONFIG_TARGET_airoha=y
+          CONFIG_TARGET_airoha_an7581=y
+          CONFIG_TARGET_MULTI_PROFILE=y
+          CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y
+          CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-compat=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-app-firewall=y
+          CONFIG_PACKAGE_luci-app-package-manager=y
+          CONFIG_PACKAGE_luci-app-upnp=y
+          CONFIG_PACKAGE_luci-proto-ppp=y
+          CONFIG_PACKAGE_luci-proto-dhcp=y
+          CONFIG_PACKAGE_luci-app-openclash=y
+          CONFIG_PACKAGE_luci-i18n-openclash-zh-cn=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_openssl-util=y
+          CONFIG_PACKAGE_unzip=y
+          CONFIG_PACKAGE_ruby=y
+          CONFIG_PACKAGE_ipset=y
+          CONFIG_PACKAGE_iptables=y
+          CONFIG_PACKAGE_kmod-tun=y
+          SEED
+          ./scripts/kconfig.pl '+' seed.config configs/release.config > .config
+          make defconfig
+          echo '=== config check ==='
+          grep -E '^(CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi|CONFIG_PACKAGE_luci-app-openclash|CONFIG_PACKAGE_luci)=' .config || true
+          grep -q '^CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y' .config
+          grep -q '^CONFIG_PACKAGE_luci=y' .config
+          grep -q '^CONFIG_PACKAGE_luci-app-openclash=y' .config || { echo '::error::luci-app-openclash not enabled'; exit 1; }
+
+      - name: Download source tarballs
+        run: make download -j"$(nproc)"
+
+      - name: Build firmware
+        run: make -j"$(nproc)"
+
+      - name: Verify OpenClash is packed
+        run: |
+          set -e
+          if ls bin/targets/airoha/an7581/packages/*openclash* >/dev/null 2>&1; then
+            ls -lh bin/targets/airoha/an7581/packages/ | grep -i openclash
+          else
+            echo '::warning::openclash package not found in build output, check build logs'
+          fi
+
+      - name: Collect images
+        run: |
+          mkdir -p release
+          cp bin/targets/airoha/an7581/*.itb release/ 2>/dev/null || true
+          cp bin/targets/airoha/an7581/*.bin release/ 2>/dev/null || true
+          cp bin/targets/airoha/an7581/*.json release/ 2>/dev/null || true
+          cd release && sha256sum * > sha256sums
+          ls -lh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ponwrt-xg040g-md-ubi-openclash-${{ github.run_number }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create GitHub Release
+        if: inputs.create_release != false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: xg040g-md-openclash-${{ github.run_number }}
+        run: |
+          gh release create "$TAG" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "PonWrt XG-040G-MD + OpenClash $TAG" \
+            --generate-notes
