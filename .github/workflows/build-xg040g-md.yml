@@ -8,6 +8,9 @@ on:
         required: false
         type: boolean
         default: true
+  push:
+    paths:
+      - 'build-trigger/xg040g-md'
 
 permissions:
   contents: write
@@ -40,7 +43,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             asciidoc autoconf automake autopoint binutils bison build-essential \
             bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk \
-            gettext git g++-multilib gcc-multilib gperf help2man inttool \
+            gettext git g++-multilib gcc-multilib gperf help2man intltool \
             libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
             libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev \
             libtool libyaml-dev lld llvm ninja-build p7zip-full patch pkgconf \
@@ -108,7 +111,7 @@ jobs:
           retention-days: 90
 
       - name: Create GitHub Release
-        if: inputs.create_release
+        if: inputs.create_release != false
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: xg040g-md-${{ github.run_number }}
