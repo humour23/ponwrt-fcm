@@ -1,0 +1,4 @@
+Build trigger for Nokia XG-040G-MD (profile: nokia_xg-040g-md-ubi)
+
+Any commit touching this file starts .github/workflows/build-xg040g-md.yml
+Created: 2026-11-22
