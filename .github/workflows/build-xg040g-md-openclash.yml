@@ -29,8 +29,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # The upstream OpenClash repo carries ~48GB of history, so feeds update (full clone)
-      # fails on it. Fetch only the luci-app-openclash directory via sparse checkout.
+      # The upstream OpenClash repo carries ~48GB of history, so a full clone in
+      # scripts/feeds fails. Fetch only the luci-app-openclash directory instead.
       - name: Fetch OpenClash package (sparse)
         run: |
           set -e
@@ -42,7 +42,6 @@ jobs:
           rm -rf package/luci-app-openclash
           cp -r oc-src/luci-app-openclash package/luci-app-openclash
           rm -rf oc-src
-          ls package/luci-app-openclash
           test -f package/luci-app-openclash/Makefile
           grep -m1 'PKG_VERSION' package/luci-app-openclash/Makefile
 
@@ -100,29 +99,20 @@ jobs:
           CONFIG_PACKAGE_luci-proto-ppp=y
           CONFIG_PACKAGE_luci-proto-dhcp=y
           CONFIG_PACKAGE_luci-app-openclash=y
-          CONFIG_PACKAGE_dnsmasq_full=y
-          # CONFIG_PACKAGE_dnsmasq is not set
-          CONFIG_PACKAGE_bash=y
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_ca-bundle=y
-          CONFIG_PACKAGE_ip-full=y
-          CONFIG_PACKAGE_ruby=y
-          CONFIG_PACKAGE_ruby-yaml=y
-          CONFIG_PACKAGE_kmod-tun=y
-          CONFIG_PACKAGE_kmod-inet-diag=y
-          CONFIG_PACKAGE_kmod-nft-tproxy=y
-          CONFIG_PACKAGE_unzip=y
-          CONFIG_PACKAGE_openssl-util=y
           SEED
           ./scripts/kconfig.pl '+' seed.config configs/release.config > .config
           make defconfig
+          # dnsmasq-full is required by OpenClash and replaces the default dnsmasq variant
+          ./scripts/config --file .config -d PACKAGE_dnsmasq -e PACKAGE_dnsmasq_full
+          ./scripts/config --file .config -e PACKAGE_luci-app-openclash -e PACKAGE_luci-compat
+          ./scripts/config --file .config -e PACKAGE_ruby -e PACKAGE_ruby-yaml -e PACKAGE_kmod-inet-diag -e PACKAGE_kmod-nft-tproxy
+          make olddefconfig
           echo '=== config check ==='
           grep -E '^(CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi|CONFIG_PACKAGE_luci-app-openclash|CONFIG_PACKAGE_dnsmasq|CONFIG_PACKAGE_ruby)=' .config || true
-          grep -q '^CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y' .config
-          grep -q '^CONFIG_PACKAGE_luci=y' .config
-          grep -q '^CONFIG_PACKAGE_dnsmasq_full=y' .config || { echo '::error::dnsmasq-full not enabled'; exit 1; }
-          grep -q '^CONFIG_PACKAGE_luci-app-openclash=y' .config || { echo '::error::luci-app-openclash not enabled'; exit 1; }
-          grep -q '^CONFIG_PACKAGE_ruby-yaml=y' .config || { echo '::error::ruby-yaml not enabled'; exit 1; }
+          grep -q '^CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y' .config || { echo '::error::wrong device profile'; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci=y' .config || { echo '::error::luci missing'; exit 1; }
+          grep -q '^CONFIG_PACKAGE_dnsmasq_full=y' .config || { echo '::error::dnsmasq-full missing'; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci-app-openclash=y' .config || { echo '::error::openclash missing'; exit 1; }
 
       - name: Download source tarballs
         run: make download -j"$(nproc)"
@@ -143,6 +133,15 @@ jobs:
           cp bin/targets/airoha/an7581/*.json release/ 2>/dev/null || true
           cd release && sha256sum * > sha256sums
           ls -lh
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-oc-${{ github.run_number }}
+          path: logs/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
