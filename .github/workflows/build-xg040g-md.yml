@@ -1,0 +1,120 @@
+name: Build Nokia XG-040G-MD
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Create a GitHub Release with the firmware image"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-xg040g-md
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build nokia_xg-040g-md-ubi
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h /
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk \
+            gettext git g++-multilib gcc-multilib gperf help2man inttool \
+            libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
+            libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool libyaml-dev lld llvm ninja-build p7zip-full patch pkgconf \
+            python3 python3-docutils python3-pip python3-ply python3-pyelftools \
+            qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs unzip wget xmlto xxd zlib1g-dev zstd
+
+      - name: Cache downloads
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: ponwrt-dl-xg040gmd-${{ hashFiles('feeds.conf.default') }}
+          restore-keys: |
+            ponwrt-dl-xg040gmd-
+
+      - name: Update and install feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure for Nokia XG-040G-MD
+        run: |
+          cat > seed.config <<'SEED'
+          CONFIG_TARGET_airoha=y
+          CONFIG_TARGET_airoha_an7581=y
+          CONFIG_TARGET_MULTI_PROFILE=y
+          CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y
+          CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-app-firewall=y
+          CONFIG_PACKAGE_luci-app-package-manager=y
+          CONFIG_PACKAGE_luci-app-upnp=y
+          CONFIG_PACKAGE_luci-proto-ppp=y
+          CONFIG_PACKAGE_luci-proto-dhcp=y
+          SEED
+          ./scripts/kconfig.pl '+' seed.config configs/release.config > .config
+          make defconfig
+          echo '=== config check ==='
+          grep -E '^(CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi|CONFIG_PACKAGE_luci)=' .config || true
+          grep -q '^CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y' .config
+          grep -q '^CONFIG_PACKAGE_luci=y' .config
+
+      - name: Download source tarballs
+        run: make download -j"$(nproc)"
+
+      - name: Build firmware
+        run: make -j"$(nproc)"
+
+      - name: Collect images
+        run: |
+          mkdir -p release
+          cp bin/targets/airoha/an7581/*.itb release/ 2>/dev/null || true
+          cp bin/targets/airoha/an7581/*.bin release/ 2>/dev/null || true
+          cp bin/targets/airoha/an7581/*.json release/ 2>/dev/null || true
+          cd release && sha256sum * > sha256sums
+          ls -lh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ponwrt-xg040g-md-ubi-${{ github.run_number }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create GitHub Release
+        if: inputs.create_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: xg040g-md-${{ github.run_number }}
+        run: |
+          gh release create "$TAG" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "PonWrt XG-040G-MD $TAG" \
+            --generate-notes
