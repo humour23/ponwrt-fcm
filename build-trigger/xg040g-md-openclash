@@ -1,3 +1,3 @@
 Build trigger: Nokia XG-040G-MD + luci-app-openclash
-Rev: 4  (2026-11-22, hyphenated symbols + deps)
+Rev: 5  (2026-11-23, ruby fail-fast + deps closure)
 Touch this file to rebuild the OpenClash variant.
