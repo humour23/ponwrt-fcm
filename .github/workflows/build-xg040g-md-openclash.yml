@@ -29,7 +29,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Upstream OpenClash carries ~48GB of history; fetch only the package dir.
       - name: Fetch OpenClash package (sparse)
         run: |
           git clone --depth=1 --filter=blob:none --sparse \
@@ -98,10 +97,12 @@ jobs:
           SEED
           ./scripts/kconfig.pl '+' seed.config configs/release.config > .config
           make defconfig
-          # OpenClash needs dnsmasq-full; it replaces the default dnsmasq variant.
+          # Package symbols keep the real hyphenated names (e.g. CONFIG_PACKAGE_dnsmasq-full).
           sed -i \
             -e 's|^CONFIG_PACKAGE_dnsmasq=y|# CONFIG_PACKAGE_dnsmasq is not set|' \
-            -e 's|^# CONFIG_PACKAGE_dnsmasq_full is not set|CONFIG_PACKAGE_dnsmasq_full=y|' \
+            -e 's|^# CONFIG_PACKAGE_dnsmasq-full is not set|CONFIG_PACKAGE_dnsmasq-full=y|' \
+            -e 's|^# CONFIG_PACKAGE_dnsmasq_full_nftset is not set|CONFIG_PACKAGE_dnsmasq_full_nftset=y|' \
+            -e 's|^# CONFIG_PACKAGE_dnsmasq_full_dnssec is not set|CONFIG_PACKAGE_dnsmasq_full_dnssec=y|' \
             -e 's|^# CONFIG_PACKAGE_luci-app-openclash is not set|CONFIG_PACKAGE_luci-app-openclash=y|' \
             -e 's|^# CONFIG_PACKAGE_luci-compat is not set|CONFIG_PACKAGE_luci-compat=y|' \
             -e 's|^# CONFIG_PACKAGE_ruby is not set|CONFIG_PACKAGE_ruby=y|' \
@@ -110,19 +111,48 @@ jobs:
             -e 's|^# CONFIG_PACKAGE_kmod-inet-diag is not set|CONFIG_PACKAGE_kmod-inet-diag=y|' \
             -e 's|^# CONFIG_PACKAGE_kmod-nft-tproxy is not set|CONFIG_PACKAGE_kmod-nft-tproxy=y|' \
             .config
-          make defconfig
+          if ! grep -q '^CONFIG_PACKAGE_dnsmasq-full=y' .config; then
+            printf 'CONFIG_PACKAGE_dnsmasq-full=y\nCONFIG_DEFAULT_dnsmasq-full=y\nCONFIG_MODULE_DEFAULT_dnsmasq-full=y\n' >> .config
+            sed -i 's|^CONFIG_DEFAULT_dnsmasq=y|# CONFIG_DEFAULT_dnsmasq is not set|; s|^CONFIG_MODULE_DEFAULT_dnsmasq=y|# CONFIG_MODULE_DEFAULT_dnsmasq is not set|' .config
+          fi
           echo '=== config check ==='
-          grep -E '^(CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi|CONFIG_PACKAGE_luci-app-openclash|CONFIG_PACKAGE_luci-compat|CONFIG_PACKAGE_dnsmasq|CONFIG_PACKAGE_dnsmasq_full|CONFIG_PACKAGE_ruby|CONFIG_PACKAGE_ruby-yaml|CONFIG_PACKAGE_kmod-tun|CONFIG_PACKAGE_kmod-nft-tproxy|CONFIG_PACKAGE_kmod-inet-diag)=' .config || true
-          grep -q '^CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y' .config || { echo '::error::wrong device profile'; exit 1; }
-          grep -q '^CONFIG_PACKAGE_luci=y' .config || { echo '::error::luci missing'; exit 1; }
-          grep -q '^CONFIG_PACKAGE_dnsmasq_full=y' .config || { echo '::error::dnsmasq-full missing'; exit 1; }
-          grep -q '^CONFIG_PACKAGE_luci-app-openclash=y' .config || { echo '::error::openclash missing'; exit 1; }
+          grep -E 'CONFIG_DEFAULT_dnsmasq|CONFIG_PACKAGE_dnsmasq|CONFIG_PACKAGE_luci-app-openclash|CONFIG_PACKAGE_luci-compat|CONFIG_PACKAGE_ruby' .config || true
+          fail=0
+          for sym in CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi CONFIG_PACKAGE_luci CONFIG_PACKAGE_dnsmasq-full CONFIG_PACKAGE_luci-app-openclash; do
+            if ! grep -q "^${sym}=y" .config; then
+              echo "::error::missing required symbol: ${sym}"
+              fail=1
+            fi
+          done
+          if grep -q '^CONFIG_PACKAGE_dnsmasq=y' .config; then
+            echo '::error::plain dnsmasq still enabled, would conflict with dnsmasq-full'
+            fail=1
+          fi
+          if [ "$fail" = "1" ]; then
+            echo "::error::config lines: $(grep -E 'dnsmasq|openclash|luci-compat|ruby' .config | tr '\n' '|' | cut -c1-1200)"
+            exit 1
+          fi
 
       - name: Download source tarballs
-        run: make download -j"$(nproc)" || (sleep 60 && make download -j"$(nproc)")
+        run: |
+          set -o pipefail
+          make download -j"$(nproc)" 2>&1 | tee download.log
+
+      - name: Report download failure
+        if: failure()
+        run: |
+          echo "::error::download tail: $(tail -n 8 download.log | tr '\n' '|' | cut -c1-1200)"
 
       - name: Build firmware
-        run: make -j"$(nproc)"
+        run: |
+          set -o pipefail
+          make -j"$(nproc)" 2>&1 | tee build.log
+
+      - name: Report build failure
+        if: failure()
+        run: |
+          echo "::error::build tail: $(tail -n 10 build.log | tr '\n' '|' | cut -c1-1200)"
+          echo "::error::first errors: $(grep -iE '(^make[[:digit:]]*: \*\*\*|error:|failed)' build.log | head -n 6 | tr '\n' '|' | cut -c1-1200)"
 
       - name: Verify OpenClash is packed
         run: |
@@ -135,17 +165,9 @@ jobs:
           cp bin/targets/airoha/an7581/*.itb release/ 2>/dev/null || true
           cp bin/targets/airoha/an7581/*.bin release/ 2>/dev/null || true
           cp bin/targets/airoha/an7581/*.json release/ 2>/dev/null || true
+          cp .config release/config.txt || true
           cd release && sha256sum * > sha256sums
           ls -lh
-
-      - name: Upload build logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs-oc-${{ github.run_number }}
-          path: logs/
-          if-no-files-found: warn
-          retention-days: 14
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
