@@ -29,17 +29,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # The upstream OpenClash repo carries ~48GB of history, so a full clone in
-      # scripts/feeds fails. Fetch only the luci-app-openclash directory instead.
+      # Upstream OpenClash carries ~48GB of history; fetch only the package dir.
       - name: Fetch OpenClash package (sparse)
         run: |
-          set -e
           git clone --depth=1 --filter=blob:none --sparse \
             https://github.com/vernesong/OpenClash.git oc-src
           cd oc-src
           git sparse-checkout set luci-app-openclash
           cd ..
-          rm -rf package/luci-app-openclash
           cp -r oc-src/luci-app-openclash package/luci-app-openclash
           rm -rf oc-src
           test -f package/luci-app-openclash/Makefile
@@ -83,6 +80,7 @@ jobs:
 
       - name: Configure for Nokia XG-040G-MD + OpenClash
         run: |
+          set -x
           cat > seed.config <<'SEED'
           CONFIG_TARGET_airoha=y
           CONFIG_TARGET_airoha_an7581=y
@@ -91,31 +89,37 @@ jobs:
           CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-base=y
-          CONFIG_PACKAGE_luci-compat=y
           CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
           CONFIG_PACKAGE_luci-app-firewall=y
           CONFIG_PACKAGE_luci-app-package-manager=y
           CONFIG_PACKAGE_luci-app-upnp=y
           CONFIG_PACKAGE_luci-proto-ppp=y
           CONFIG_PACKAGE_luci-proto-dhcp=y
-          CONFIG_PACKAGE_luci-app-openclash=y
           SEED
           ./scripts/kconfig.pl '+' seed.config configs/release.config > .config
           make defconfig
-          # dnsmasq-full is required by OpenClash and replaces the default dnsmasq variant
-          ./scripts/config --file .config -d PACKAGE_dnsmasq -e PACKAGE_dnsmasq_full
-          ./scripts/config --file .config -e PACKAGE_luci-app-openclash -e PACKAGE_luci-compat
-          ./scripts/config --file .config -e PACKAGE_ruby -e PACKAGE_ruby-yaml -e PACKAGE_kmod-inet-diag -e PACKAGE_kmod-nft-tproxy
-          make olddefconfig
+          # OpenClash needs dnsmasq-full; it replaces the default dnsmasq variant.
+          sed -i \
+            -e 's|^CONFIG_PACKAGE_dnsmasq=y|# CONFIG_PACKAGE_dnsmasq is not set|' \
+            -e 's|^# CONFIG_PACKAGE_dnsmasq_full is not set|CONFIG_PACKAGE_dnsmasq_full=y|' \
+            -e 's|^# CONFIG_PACKAGE_luci-app-openclash is not set|CONFIG_PACKAGE_luci-app-openclash=y|' \
+            -e 's|^# CONFIG_PACKAGE_luci-compat is not set|CONFIG_PACKAGE_luci-compat=y|' \
+            -e 's|^# CONFIG_PACKAGE_ruby is not set|CONFIG_PACKAGE_ruby=y|' \
+            -e 's|^# CONFIG_PACKAGE_ruby-yaml is not set|CONFIG_PACKAGE_ruby-yaml=y|' \
+            -e 's|^# CONFIG_PACKAGE_kmod-tun is not set|CONFIG_PACKAGE_kmod-tun=y|' \
+            -e 's|^# CONFIG_PACKAGE_kmod-inet-diag is not set|CONFIG_PACKAGE_kmod-inet-diag=y|' \
+            -e 's|^# CONFIG_PACKAGE_kmod-nft-tproxy is not set|CONFIG_PACKAGE_kmod-nft-tproxy=y|' \
+            .config
+          make defconfig
           echo '=== config check ==='
-          grep -E '^(CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi|CONFIG_PACKAGE_luci-app-openclash|CONFIG_PACKAGE_dnsmasq|CONFIG_PACKAGE_ruby)=' .config || true
+          grep -E '^(CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi|CONFIG_PACKAGE_luci-app-openclash|CONFIG_PACKAGE_luci-compat|CONFIG_PACKAGE_dnsmasq|CONFIG_PACKAGE_dnsmasq_full|CONFIG_PACKAGE_ruby|CONFIG_PACKAGE_ruby-yaml|CONFIG_PACKAGE_kmod-tun|CONFIG_PACKAGE_kmod-nft-tproxy|CONFIG_PACKAGE_kmod-inet-diag)=' .config || true
           grep -q '^CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y' .config || { echo '::error::wrong device profile'; exit 1; }
           grep -q '^CONFIG_PACKAGE_luci=y' .config || { echo '::error::luci missing'; exit 1; }
           grep -q '^CONFIG_PACKAGE_dnsmasq_full=y' .config || { echo '::error::dnsmasq-full missing'; exit 1; }
           grep -q '^CONFIG_PACKAGE_luci-app-openclash=y' .config || { echo '::error::openclash missing'; exit 1; }
 
       - name: Download source tarballs
-        run: make download -j"$(nproc)"
+        run: make download -j"$(nproc)" || (sleep 60 && make download -j"$(nproc)")
 
       - name: Build firmware
         run: make -j"$(nproc)"
