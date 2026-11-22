@@ -97,12 +97,16 @@ jobs:
           SEED
           ./scripts/kconfig.pl '+' seed.config configs/release.config > .config
           make defconfig
-          # Package symbols keep the real hyphenated names (e.g. CONFIG_PACKAGE_dnsmasq-full).
+          # Package symbols keep real hyphenated names (e.g. CONFIG_PACKAGE_dnsmasq-full).
           sed -i \
             -e 's|^CONFIG_PACKAGE_dnsmasq=y|# CONFIG_PACKAGE_dnsmasq is not set|' \
             -e 's|^# CONFIG_PACKAGE_dnsmasq-full is not set|CONFIG_PACKAGE_dnsmasq-full=y|' \
             -e 's|^# CONFIG_PACKAGE_dnsmasq_full_nftset is not set|CONFIG_PACKAGE_dnsmasq_full_nftset=y|' \
             -e 's|^# CONFIG_PACKAGE_dnsmasq_full_dnssec is not set|CONFIG_PACKAGE_dnsmasq_full_dnssec=y|' \
+            -e 's|^# CONFIG_PACKAGE_dnsmasq_full_conntrack is not set|CONFIG_PACKAGE_dnsmasq_full_conntrack=y|' \
+            -e 's|^# CONFIG_PACKAGE_nftables-json is not set|CONFIG_PACKAGE_nftables-json=y|' \
+            -e 's|^# CONFIG_PACKAGE_libnettle is not set|CONFIG_PACKAGE_libnettle=y|' \
+            -e 's|^# CONFIG_PACKAGE_libnetfilter-conntrack is not set|CONFIG_PACKAGE_libnetfilter-conntrack=y|' \
             -e 's|^# CONFIG_PACKAGE_luci-app-openclash is not set|CONFIG_PACKAGE_luci-app-openclash=y|' \
             -e 's|^# CONFIG_PACKAGE_luci-compat is not set|CONFIG_PACKAGE_luci-compat=y|' \
             -e 's|^# CONFIG_PACKAGE_ruby is not set|CONFIG_PACKAGE_ruby=y|' \
@@ -115,6 +119,9 @@ jobs:
             printf 'CONFIG_PACKAGE_dnsmasq-full=y\nCONFIG_DEFAULT_dnsmasq-full=y\nCONFIG_MODULE_DEFAULT_dnsmasq-full=y\n' >> .config
             sed -i 's|^CONFIG_DEFAULT_dnsmasq=y|# CONFIG_DEFAULT_dnsmasq is not set|; s|^CONFIG_MODULE_DEFAULT_dnsmasq=y|# CONFIG_MODULE_DEFAULT_dnsmasq is not set|' .config
           fi
+          for sym in CONFIG_PACKAGE_nftables-json CONFIG_PACKAGE_libnettle CONFIG_PACKAGE_libnetfilter-conntrack CONFIG_PACKAGE_ruby CONFIG_PACKAGE_ruby-yaml CONFIG_PACKAGE_kmod-tun CONFIG_PACKAGE_kmod-nft-tproxy CONFIG_PACKAGE_kmod-inet-diag CONFIG_PACKAGE_luci-compat; do
+            grep -q "^${sym}=y" .config || echo "::warning::not set: ${sym}"
+          done
           echo '=== config check ==='
           grep -E 'CONFIG_DEFAULT_dnsmasq|CONFIG_PACKAGE_dnsmasq|CONFIG_PACKAGE_luci-app-openclash|CONFIG_PACKAGE_luci-compat|CONFIG_PACKAGE_ruby' .config || true
           fail=0
