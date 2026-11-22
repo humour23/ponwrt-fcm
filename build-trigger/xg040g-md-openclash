@@ -1,3 +1,3 @@
-Build trigger: Nokia XG-040G-MD + luci-app-openclash (sparse fetch, dnsmasq-full)
-Rev: 2  (2026-11-22)
+Build trigger: Nokia XG-040G-MD + luci-app-openclash
+Rev: 3  (2026-11-22, defconfig+sed config pass)
 Touch this file to rebuild the OpenClash variant.
