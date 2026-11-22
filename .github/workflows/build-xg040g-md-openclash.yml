@@ -41,11 +41,15 @@ jobs:
           test -f package/luci-app-openclash/Makefile
           grep -m1 'PKG_VERSION' package/luci-app-openclash/Makefile
 
-      - name: Free disk space
+      - name: Free disk space + swap
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo apt-get clean
-          df -h /
+          sudo fallocate -l 4G /swapfile || true
+          sudo chmod 600 /swapfile || true
+          sudo mkswap /swapfile || true
+          sudo swapon /swapfile || true
+          df -h / ; free -h
 
       - name: Install build dependencies
         env:
@@ -109,34 +113,34 @@ jobs:
             -e 's|^# CONFIG_PACKAGE_libnetfilter-conntrack is not set|CONFIG_PACKAGE_libnetfilter-conntrack=y|' \
             -e 's|^# CONFIG_PACKAGE_luci-app-openclash is not set|CONFIG_PACKAGE_luci-app-openclash=y|' \
             -e 's|^# CONFIG_PACKAGE_luci-compat is not set|CONFIG_PACKAGE_luci-compat=y|' \
-            -e 's|^# CONFIG_PACKAGE_ruby is not set|CONFIG_PACKAGE_ruby=y|' \
-            -e 's|^# CONFIG_PACKAGE_ruby-yaml is not set|CONFIG_PACKAGE_ruby-yaml=y|' \
             -e 's|^# CONFIG_PACKAGE_kmod-tun is not set|CONFIG_PACKAGE_kmod-tun=y|' \
             -e 's|^# CONFIG_PACKAGE_kmod-inet-diag is not set|CONFIG_PACKAGE_kmod-inet-diag=y|' \
             -e 's|^# CONFIG_PACKAGE_kmod-nft-tproxy is not set|CONFIG_PACKAGE_kmod-nft-tproxy=y|' \
             .config
+          # ruby dependency closure required by luci-app-openclash (ruby + ruby-yaml)
+          for sym in CONFIG_PACKAGE_ruby CONFIG_PACKAGE_ruby-yaml CONFIG_PACKAGE_ruby-psych \
+                     CONFIG_PACKAGE_ruby-pstore CONFIG_PACKAGE_ruby-stringio CONFIG_PACKAGE_ruby-bigdecimal \
+                     CONFIG_PACKAGE_ruby-date CONFIG_PACKAGE_ruby-enc CONFIG_PACKAGE_ruby-digest \
+                     CONFIG_PACKAGE_libyaml; do
+            if ! grep -q "^${sym}=y" .config; then
+              printf '%s=y\n' "$sym" >> .config
+            fi
+          done
           if ! grep -q '^CONFIG_PACKAGE_dnsmasq-full=y' .config; then
             printf 'CONFIG_PACKAGE_dnsmasq-full=y\nCONFIG_DEFAULT_dnsmasq-full=y\nCONFIG_MODULE_DEFAULT_dnsmasq-full=y\n' >> .config
-            sed -i 's|^CONFIG_DEFAULT_dnsmasq=y|# CONFIG_DEFAULT_dnsmasq is not set|; s|^CONFIG_MODULE_DEFAULT_dnsmasq=y|# CONFIG_MODULE_DEFAULT_dnsmasq is not set|' .config
           fi
-          for sym in CONFIG_PACKAGE_nftables-json CONFIG_PACKAGE_libnettle CONFIG_PACKAGE_libnetfilter-conntrack CONFIG_PACKAGE_ruby CONFIG_PACKAGE_ruby-yaml CONFIG_PACKAGE_kmod-tun CONFIG_PACKAGE_kmod-nft-tproxy CONFIG_PACKAGE_kmod-inet-diag CONFIG_PACKAGE_luci-compat; do
-            grep -q "^${sym}=y" .config || echo "::warning::not set: ${sym}"
-          done
           echo '=== config check ==='
-          grep -E 'CONFIG_DEFAULT_dnsmasq|CONFIG_PACKAGE_dnsmasq|CONFIG_PACKAGE_luci-app-openclash|CONFIG_PACKAGE_luci-compat|CONFIG_PACKAGE_ruby' .config || true
+          grep -E 'CONFIG_DEFAULT_dnsmasq|CONFIG_PACKAGE_dnsmasq|CONFIG_PACKAGE_luci-app-openclash|CONFIG_PACKAGE_ruby|CONFIG_PACKAGE_libyaml' .config || true
           fail=0
-          for sym in CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi CONFIG_PACKAGE_luci CONFIG_PACKAGE_dnsmasq-full CONFIG_PACKAGE_luci-app-openclash; do
+          for sym in CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi CONFIG_PACKAGE_luci \
+                     CONFIG_PACKAGE_dnsmasq-full CONFIG_PACKAGE_luci-app-openclash CONFIG_PACKAGE_ruby \
+                     CONFIG_PACKAGE_ruby-yaml; do
             if ! grep -q "^${sym}=y" .config; then
               echo "::error::missing required symbol: ${sym}"
               fail=1
             fi
           done
-          if grep -q '^CONFIG_PACKAGE_dnsmasq=y' .config; then
-            echo '::error::plain dnsmasq still enabled, would conflict with dnsmasq-full'
-            fail=1
-          fi
           if [ "$fail" = "1" ]; then
-            echo "::error::config lines: $(grep -E 'dnsmasq|openclash|luci-compat|ruby' .config | tr '\n' '|' | cut -c1-1200)"
             exit 1
           fi
 
@@ -150,6 +154,19 @@ jobs:
         run: |
           echo "::error::download tail: $(tail -n 8 download.log | tr '\n' '|' | cut -c1-1200)"
 
+      # Fail fast on the ruby toolchain instead of discovering it after the full build.
+      - name: Pre-build ruby (verbose)
+        run: |
+          set -o pipefail
+          make -j1 V=s package/feeds/packages/ruby/compile 2>&1 | tee ruby.log
+          ls -l bin/packages/*/base/ | grep -i ruby || true
+
+      - name: Report ruby failure
+        if: failure()
+        run: |
+          echo "::error::ruby errors: $(grep -iE '(^make.*\\*\\*\\*|Error [0-9]|error:|Segmentation|Aborted|missing files|File not found|failed to)' ruby.log | tail -n 8 | tr '\n' '|' | cut -c1-1400)"
+          echo "::error::ruby tail: $(tail -n 12 ruby.log | tr '\n' '|' | cut -c1-1400)"
+
       - name: Build firmware
         run: |
           set -o pipefail
@@ -159,12 +176,12 @@ jobs:
         if: failure()
         run: |
           echo "::error::build tail: $(tail -n 10 build.log | tr '\n' '|' | cut -c1-1200)"
-          echo "::error::first errors: $(grep -iE '(^make[[:digit:]]*: \*\*\*|error:|failed)' build.log | head -n 6 | tr '\n' '|' | cut -c1-1200)"
+          echo "::error::first errors: $(grep -iE '(^make[[:digit:]]*: \\*\\*\\*|ERROR: package|missing)' build.log | head -n 6 | tr '\n' '|' | cut -c1-1200)"
 
       - name: Verify OpenClash is packed
         run: |
-          ls -lh bin/targets/airoha/an7581/packages/ 2>/dev/null | grep -i openclash || \
-            echo '::warning::openclash package not present in build output'
+          ls -lh bin/targets/airoha/an7581/packages/ 2>/dev/null | grep -iE 'openclash|ruby' || \
+            echo '::warning::openclash/ruby package not present in build output'
 
       - name: Collect images
         run: |
