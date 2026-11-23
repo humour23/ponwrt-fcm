@@ -83,7 +83,6 @@ jobs:
 
       - name: Configure for Nokia XG-040G-MD + OpenClash
         run: |
-          set -x
           cat > seed.config <<'SEED'
           CONFIG_TARGET_airoha=y
           CONFIG_TARGET_airoha_an7581=y
@@ -101,7 +100,6 @@ jobs:
           SEED
           ./scripts/kconfig.pl '+' seed.config configs/release.config > .config
           make defconfig
-          # Package symbols keep real hyphenated names (e.g. CONFIG_PACKAGE_dnsmasq-full).
           sed -i \
             -e 's|^CONFIG_PACKAGE_dnsmasq=y|# CONFIG_PACKAGE_dnsmasq is not set|' \
             -e 's|^# CONFIG_PACKAGE_dnsmasq-full is not set|CONFIG_PACKAGE_dnsmasq-full=y|' \
@@ -117,7 +115,6 @@ jobs:
             -e 's|^# CONFIG_PACKAGE_kmod-inet-diag is not set|CONFIG_PACKAGE_kmod-inet-diag=y|' \
             -e 's|^# CONFIG_PACKAGE_kmod-nft-tproxy is not set|CONFIG_PACKAGE_kmod-nft-tproxy=y|' \
             .config
-          # ruby dependency closure required by luci-app-openclash (ruby + ruby-yaml)
           for sym in CONFIG_PACKAGE_ruby CONFIG_PACKAGE_ruby-yaml CONFIG_PACKAGE_ruby-psych \
                      CONFIG_PACKAGE_ruby-pstore CONFIG_PACKAGE_ruby-stringio CONFIG_PACKAGE_ruby-bigdecimal \
                      CONFIG_PACKAGE_ruby-date CONFIG_PACKAGE_ruby-enc CONFIG_PACKAGE_ruby-digest \
@@ -154,17 +151,25 @@ jobs:
         run: |
           echo "::error::download tail: $(tail -n 8 download.log | tr '\n' '|' | cut -c1-1200)"
 
-      # Fail fast on the ruby toolchain instead of discovering it after the full build.
+      - name: Build host tools and toolchain
+        run: |
+          set -o pipefail
+          make -j"$(nproc)" tools/install toolchain/install 2>&1 | tee tools.log
+
+      - name: Report tools failure
+        if: failure()
+        run: |
+          echo "::error::tools tail: $(tail -n 10 tools.log | tr '\n' '|' | cut -c1-1200)"
+
       - name: Pre-build ruby (verbose)
         run: |
           set -o pipefail
           make -j1 V=s package/feeds/packages/ruby/compile 2>&1 | tee ruby.log
-          ls -l bin/packages/*/base/ | grep -i ruby || true
 
       - name: Report ruby failure
         if: failure()
         run: |
-          echo "::error::ruby errors: $(grep -iE '(^make.*\\*\\*\\*|Error [0-9]|error:|Segmentation|Aborted|missing files|File not found|failed to)' ruby.log | tail -n 8 | tr '\n' '|' | cut -c1-1400)"
+          echo "::error::ruby errors: $(grep -iE '(Error [0-9]|error:|Segmentation|Aborted|missing files|File not found|failed to|\\*\\*\\*)' ruby.log | tail -n 8 | tr '\n' '|' | cut -c1-1400)"
           echo "::error::ruby tail: $(tail -n 12 ruby.log | tr '\n' '|' | cut -c1-1400)"
 
       - name: Build firmware
@@ -176,7 +181,7 @@ jobs:
         if: failure()
         run: |
           echo "::error::build tail: $(tail -n 10 build.log | tr '\n' '|' | cut -c1-1200)"
-          echo "::error::first errors: $(grep -iE '(^make[[:digit:]]*: \\*\\*\\*|ERROR: package|missing)' build.log | head -n 6 | tr '\n' '|' | cut -c1-1200)"
+          echo "::error::first errors: $(grep -iE '(ERROR: package|missing|\\*\\*\\*)' build.log | head -n 6 | tr '\n' '|' | cut -c1-1200)"
 
       - name: Verify OpenClash is packed
         run: |
